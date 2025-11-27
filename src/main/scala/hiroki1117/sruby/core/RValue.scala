@@ -5,46 +5,40 @@ import cats.effect.IO
 
 /**
   * =========================================================
-  * Ruby Interpreter Core Representation
-  * =========================================================
-  *
-  *  - RValue: Ruby のすべての値の基底型
-  *  - RObject: Ruby の一般オブジェクト（インスタンス変数含む）
-  *  - RClass: Ruby のクラス（メソッドテーブル・継承）
-  *  - RMethod: Ruby メソッド（Eval を返す）
-  *  - Env: ローカル変数環境
-  *  - Frame: メソッド呼び出し中のフレーム
-  *  - VMState: Interpreter 全体の状態
-  *
-  *  ここまでが Ruby 処理系の「心臓部」
+  * Eval モナド
+  *   - IO（副作用）
+  *   - VMState（インタプリタ状態）
+  *   を合成した、Ruby の実行コンテキスト
   * =========================================================
   */
-
-/** StateT を使った Ruby 実行モナド */
 type Eval[A] = StateT[IO, VMState, A]
 
 /**
-  * Ruby の値（すべてのオブジェクトの基底）
+  * =========================================================
+  * RValue - Ruby の全ての値の共通基底
+  * =========================================================
   */
 trait RValue:
   def rubyClass: RClass
 
-  /** truthiness は false/nil だけ false */
+  /** truthiness: false/nilのみfalse */
   def isTruthy: Boolean = true
 
-  /** Ruby の inspect は Kernel#inspect が本来実装するが、最低限の初期値 */
-  def inspect: String = toRubyString
+  /** Ruby’s #inspect (デフォルト実装) */
+  def inspect: String = s"#<${rubyClass.name}>"
 
-  /** Ruby の to_s（デフォルトは inspect と同じでよい） */
+  /** Ruby’s #to_s (デフォルトはinspectと別物にできる) */
   def toRubyString: String = inspect
 
-  /** インスタンス変数（通常は RObject だけが実装） */
+  /** Instance variable (only RObject normally supports this) */
   def getInstanceVariable(name: String): Option[RValue] = None
   def setInstanceVariable(name: String, value: RValue): RValue =
-    throw new UnsupportedOperationException("Instance variables not supported")
+    throw new UnsupportedOperationException("Instance variables are not supported here")
 
 /**
-  * Ruby の一般オブジェクト（インスタンス変数を保持）
+  * =========================================================
+  * RObject - Ruby の一般オブジェクト（インスタンス変数保持）
+  * =========================================================
   */
 final case class RObject(
   rubyClass: RClass,
@@ -57,15 +51,13 @@ final case class RObject(
   override def setInstanceVariable(name: String, value: RValue): RObject =
     this.copy(ivars = ivars.updated(name, value))
 
-  override def toRubyString: String =
+  override def inspect: String =
     s"#<${rubyClass.name}:0x${System.identityHashCode(this).toHexString}>"
 
 /**
-  * Ruby のクラス
-  *
-  * - name
-  * - superclass（継承）
-  * - methods（メソッドテーブル）
+  * =========================================================
+  * Ruby クラス（メソッドテーブル + 継承）
+  * =========================================================
   */
 final case class RClass(
   name: String,
@@ -73,35 +65,131 @@ final case class RClass(
   methods: Map[String, RMethod] = Map.empty
 ) extends RValue:
 
-  /** Class#class は Class 自身 */
-  override def rubyClass: RClass = RClass.ClassClass
+  override def rubyClass: RClass = Builtins.ClassClass
 
-  /** class はインスタンス変数を持てる */
-  override def getInstanceVariable(name: String): Option[RValue] = None
+  override def inspect: String = name
 
-  override def toRubyString: String = name
-
-  /** メソッド定義 */
+  /**
+    * メソッド定義
+    */
   def defineMethod(name: String, method: RMethod): RClass =
     this.copy(methods = methods.updated(name, method))
 
-  /** メソッド探索（継承チェーンを辿る） */
+  /**
+    * メソッド探索（継承チェーンを辿る）
+    */
   def lookupMethod(name: String): Option[RMethod] =
     methods.get(name).orElse(superclass.flatMap(_.lookupMethod(name)))
 
 /**
-  * Ruby メソッド表現
-  *
-  * - receiver（self）
-  * - 引数
-  * - Eval[RValue] を返す（StateT + IO）
+  * =========================================================
+  * Ruby メソッド表現（Eval を返す）
+  * =========================================================
   */
 final case class RMethod(
   invoke: (RValue, List[RValue]) => Eval[RValue]
 )
 
 /**
-  * ローカル変数環境
+  * =========================================================
+  * Env - ローカル変数環境
+  * =========================================================
   */
 final case class Env(vars: Map[String, RValue] = Map.empty):
-  def get(name: String): Option[RV]()
+  def get(name: String): Option[RValue] = vars.get(name)
+  def set(name: String, value: RValue): Env =
+    this.copy(vars = vars.updated(name, value))
+
+/**
+  * =========================================================
+  * Frame - メソッド呼び出しの実行フレーム
+  * =========================================================
+  */
+final case class Frame(
+  self: RValue,
+  env: Env,
+  currentClass: RClass
+)
+
+/**
+  * =========================================================
+  * VMState - インタプリタ全体状態
+  * =========================================================
+  */
+final case class VMState(
+  frames: List[Frame],
+  globalClasses: Map[String, RClass] = Map.empty
+):
+  def currentFrame: Frame = frames.head
+
+  def pushFrame(f: Frame): VMState =
+    this.copy(frames = f :: frames)
+
+  def popFrame(): (Frame, VMState) =
+    (frames.head, this.copy(frames = frames.tail))
+
+/**
+  * =========================================================
+  * Builtins - Ruby の基本クラス定義
+  * Class/Object/Boolean/String/Integer/Nil...
+  * =========================================================
+  */
+object Builtins:
+
+  // プレースホルダ（後で上書き）
+  private val dummy: RClass = RClass("Dummy", None)
+
+  lazy val ObjectClass: RClass =
+    RClass("Object", None)
+
+  lazy val ClassClass: RClass =
+    RClass("Class", Some(ObjectClass))
+
+  // Ruby の正しい循環関係の確立
+  // Object.class == Class
+  // Class.class == Class
+  ObjectClass.superclass     // force init
+  ClassClass.superclass      // force init
+
+  // プリミティブクラス
+  lazy val NilClass: RClass     = RClass("NilClass", Some(ObjectClass))
+  lazy val TrueClass: RClass    = RClass("TrueClass", Some(ObjectClass))
+  lazy val FalseClass: RClass   = RClass("FalseClass", Some(ObjectClass))
+  lazy val IntegerClass: RClass = RClass("Integer", Some(ObjectClass))
+  lazy val StringClass: RClass  = RClass("String", Some(ObjectClass))
+
+/**
+  * =========================================================
+  * Ruby プリミティブ値
+  * =========================================================
+  */
+case object RNil extends RValue:
+  override def rubyClass: RClass = Builtins.NilClass
+  override def isTruthy: Boolean = false
+  override def inspect: String = "nil"
+  override def toRubyString: String = ""
+
+case object RTrue extends RValue:
+  override def rubyClass: RClass = Builtins.TrueClass
+  override def toRubyString: String = "true"
+
+case object RFalse extends RValue:
+  override def rubyClass: RClass = Builtins.FalseClass
+  override def isTruthy: Boolean = false
+  override def toRubyString: String = "false"
+
+/**
+  * Integer
+  */
+final case class RInteger(value: Long) extends RValue:
+  override def rubyClass: RClass = Builtins.IntegerClass
+  override def inspect: String = value.toString
+  override def toRubyString: String = value.toString
+
+/**
+  * String
+  */
+final case class RString(value: String) extends RValue:
+  override def rubyClass: RClass = Builtins.StringClass
+  override def inspect: String = s""""$value""""
+  override def toRubyString: String = value
