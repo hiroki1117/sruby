@@ -148,6 +148,11 @@ object Builtins:
   lazy val FalseClass: RClass   = RClass("FalseClass", Some(ObjectClass))
   lazy val IntegerClass: RClass = RClass("Integer", Some(ObjectClass))
   lazy val StringClass: RClass  = RClass("String", Some(ObjectClass))
+  lazy val SymbolClass: RClass  = RClass("Symbol", Some(ObjectClass))
+  lazy val FloatClass: RClass   = RClass("Float", Some(ObjectClass))
+  lazy val ArrayClass: RClass   = RClass("Array", Some(ObjectClass))
+  lazy val HashClass: RClass    = RClass("Hash", Some(ObjectClass))
+  lazy val RangeClass: RClass   = RClass("Range", Some(ObjectClass))
 
 /**
   * =========================================================
@@ -184,3 +189,19 @@ final case class RString(value: String) extends RValue:
   override def rubyClass: RClass = Builtins.StringClass
   override def inspect: String = s""""$value""""
   override def toRubyString: String = value
+
+/**
+  * Symbol
+  * Ruby の Symbol は不変・高速比較・interned
+  */
+final case class RSymbol(name: String) extends RValue:
+  override def rubyClass: RClass = Builtins.SymbolClass
+  override def inspect: String = s":$name"
+  override def toRubyString: String = name
+
+object RSymbol:
+  // Symbol の intern pool（同じ名前のシンボルは同一オブジェクト）
+  private val internPool = scala.collection.mutable.Map[String, RSymbol]()
+  
+  def intern(name: String): RSymbol =
+    internPool.getOrElseUpdate(name, RSymbol(name))

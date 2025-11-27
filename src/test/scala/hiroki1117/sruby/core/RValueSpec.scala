@@ -68,6 +68,35 @@ class RValueSpec extends FunSuite {
   }
   
   // =========================================================
+  // RSymbol のテスト
+  // =========================================================
+  
+  test("RSymbol intern returns same object for same name") {
+    val sym1 = RSymbol.intern("test")
+    val sym2 = RSymbol.intern("test")
+    assert(sym1 eq sym2, "Same symbol name should return same object")
+  }
+
+  test("RSymbol different names return different objects") {
+    val sym1 = RSymbol.intern("foo")
+    val sym2 = RSymbol.intern("bar")
+    assert(sym1 ne sym2, "Different symbol names should return different objects")
+  }
+
+  test("RSymbol inspect") {
+    assertEquals(RSymbol.intern("hello").inspect, ":hello")
+  }
+
+  test("RSymbol to_s") {
+    assertEquals(RSymbol.intern("world").toRubyString, "world")
+  }
+
+  test("RSymbol class") {
+    assertEquals(RSymbol.intern("test").rubyClass, Builtins.SymbolClass)
+    assertEquals(Builtins.SymbolClass.name, "Symbol")
+  }
+  
+  // =========================================================
   // RClass の階層とメソッド探索
   // =========================================================
   

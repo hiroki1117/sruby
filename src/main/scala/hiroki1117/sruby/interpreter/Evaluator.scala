@@ -47,10 +47,9 @@ object Evaluator:
       StateT.pure(if b then RTrue else RFalse)
     
     case SymbolLiteral(name, _) =>
-      // TODO Phase 2: RSymbol.intern(name) を実装
       // Ruby の Symbol は不変・高速比較・interned
-      // 現在は暫定的に String として扱う（Phase 2 で RSymbol に変更）
-      StateT.pure(RString(name))
+      // RSymbol.intern により同名シンボルは同一オブジェクト
+      StateT.pure(RSymbol.intern(name))
     
     // =========================================================
     // Self
@@ -146,7 +145,9 @@ object Evaluator:
           case Some(expr) => eval(expr)
           case None => getCurrentSelf()
         args <- argExprs.traverse(eval)
-        // TODO: ブロック引数の処理
+        // TODO Phase 2: ブロック引数を Proc オブジェクトに変換
+        // blockOpt <- blockExpr.traverse(makeProc)
+        // result <- callMethod(receiver, methodName, args, blockOpt)
         result <- callMethod(receiver, methodName, args)
       yield result
     
@@ -196,7 +197,9 @@ object Evaluator:
     // =========================================================
     
     case BlockExpr(params, body, kind, _) =>
-      // TODO: Proc オブジェクトの生成
+      // TODO Phase 2: Proc オブジェクトの生成
+      // - 現在の env と self をキャプチャ
+      // - RProc(params, body, capturedEnv, capturedSelf) を生成
       StateT.pure(RNil)  // 暫定
     
     // =========================================================
@@ -204,24 +207,34 @@ object Evaluator:
     // =========================================================
     
     case MethodDef(name, params, body, _) =>
-      // TODO: 現在のクラスにメソッドを定義
-      StateT.pure(RNil)  // 暫定（本来はシンボルを返す）
+      // TODO Phase 2: 現在のクラスにメソッドを定義
+      // 必要な処理:
+      //   1. frame.currentClass を取得
+      //   2. RMethod(name, params, body) を生成
+      //   3. currentClass.defineMethod(name, method) で登録
+      //   4. シンボルを返す（Ruby の仕様）
+      StateT.pure(RSymbol.intern(name))  // 暫定（Phase 2 で実装）
     
     // =========================================================
     // クラス定義
     // =========================================================
     
     case ClassDef(nameParts, superclassExpr, body, pos) =>
-      // TODO: クラスの生成と登録
-      StateT.pure(RNil)  // 暫定
+      // TODO Phase 2: クラスの生成と登録
+      // 必要な処理:
+      //   1. クラス名の解決（既存 or 新規作成）
+      //   2. superclass の評価
+      //   3. 新しいフレーム（self = klass）で body を評価
+      //   4. クラスオブジェクトを返す
+      StateT.pure(RNil)  // 暫定（Phase 2 で実装）
     
     // =========================================================
     // モジュール定義
     // =========================================================
     
     case ModuleDef(nameParts, body, _) =>
-      // TODO: モジュールの生成と登録
-      StateT.pure(RNil)  // 暫定
+      // TODO Phase 3: モジュールの生成と登録
+      StateT.pure(RNil)  // 暫定（Phase 3 で実装）
   
   // =========================================================
   // ヘルパー関数
@@ -293,24 +306,21 @@ object Evaluator:
   private def lookupConstant(nameParts: List[String], pos: Position): Eval[RValue] =
     nameParts match
       // 基本クラス定数: クラスオブジェクト自体を返す
-      // Phase 1: 現在実装されているクラスのみ
       case List("Object")    => StateT.pure(Builtins.ObjectClass)
       case List("Class")     => StateT.pure(Builtins.ClassClass)
       case List("Integer")   => StateT.pure(Builtins.IntegerClass)
       case List("String")    => StateT.pure(Builtins.StringClass)
+      case List("Symbol")    => StateT.pure(Builtins.SymbolClass)
+      case List("Float")     => StateT.pure(Builtins.FloatClass)
+      case List("Array")     => StateT.pure(Builtins.ArrayClass)
+      case List("Hash")      => StateT.pure(Builtins.HashClass)
+      case List("Range")     => StateT.pure(Builtins.RangeClass)
       case List("NilClass")  => StateT.pure(Builtins.NilClass)
       case List("TrueClass") => StateT.pure(Builtins.TrueClass)
       case List("FalseClass")=> StateT.pure(Builtins.FalseClass)
       
-      // TODO Phase 2: 以下のクラスを RValue.scala の Builtins に追加
-      // case List("Float")  => StateT.pure(Builtins.FloatClass)
-      // case List("Symbol") => StateT.pure(Builtins.SymbolClass)
-      // case List("Array")  => StateT.pure(Builtins.ArrayClass)
-      // case List("Hash")   => StateT.pure(Builtins.HashClass)
-      // case List("Range")  => StateT.pure(Builtins.RangeClass)
-      
-      // TODO: VMState.globalConstants からの検索
-      // TODO: ネストした定数 A::B::C の解決
+      // TODO Phase 2: VMState.globalConstants からの検索
+      // TODO Phase 2: ネストした定数 A::B::C の解決
       case _ => raiseError(s"uninitialized constant ${nameParts.mkString("::")}", pos)
   
   /**
@@ -339,10 +349,9 @@ object Evaluator:
             // method_missing にフォールバック
             receiver.rubyClass.lookupMethod("method_missing") match
               case Some(missingMethod) =>
-                // TODO: RSymbol の実装後、シンボルとして渡す
-                // 暫定: メソッド名を文字列として渡す
-                val methodNameValue = RString(methodName)
-                missingMethod.invoke(receiver, methodNameValue :: args)
+                // Ruby の method_missing は第1引数にシンボルを受け取る
+                val methodNameSymbol = RSymbol.intern(methodName)
+                missingMethod.invoke(receiver, methodNameSymbol :: args)
               
               case None =>
                 // method_missing も見つからない場合はエラー
@@ -448,7 +457,8 @@ object Evaluator:
       // =========================================================
       
       case (obj, "class", Nil) =>
-        Some(StateT.pure(RObject(Builtins.ClassClass)))  // 暫定
+        // Ruby の obj.class は receiver のクラス（RClass）を返す
+        Some(StateT.pure(obj.rubyClass))
       
       case (obj, "to_s", Nil) =>
         Some(StateT.pure(RString(obj.toRubyString)))

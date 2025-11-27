@@ -56,6 +56,25 @@ class EvaluatorSpec extends CatsEffectSuite:
       assertEquals(result, RFalse)
     }
   }
+
+  test("evaluate symbol literal") {
+    val ast = SymbolLiteral("test")
+    evalExpr(ast).map { result =>
+      assertEquals(result, RSymbol.intern("test"))
+      assertEquals(result.inspect, ":test")
+    }
+  }
+
+  test("symbol literal interning") {
+    val ast = Sequence(List(
+      SymbolLiteral("foo"),
+      SymbolLiteral("foo")
+    ))
+    evalExpr(ast).map { result =>
+      // 2回目も同じオブジェクトが返る
+      assertEquals(result, RSymbol.intern("foo"))
+    }
+  }
   
   // =========================================================
   // 変数のテスト
@@ -215,6 +234,22 @@ class EvaluatorSpec extends CatsEffectSuite:
     val ast = MethodCall(Some(StringLiteral("hello")), "length", List.empty)
     evalExpr(ast).map { result =>
       assertEquals(result, RInteger(5))
+    }
+  }
+
+  test("evaluate obj.class returns class object") {
+    val ast = MethodCall(Some(IntLiteral(42)), "class", List.empty)
+    evalExpr(ast).map { result =>
+      assertEquals(result, Builtins.IntegerClass)
+      assertEquals(result.asInstanceOf[RClass].name, "Integer")
+    }
+  }
+
+  test("evaluate string.class") {
+    val ast = MethodCall(Some(StringLiteral("hello")), "class", List.empty)
+    evalExpr(ast).map { result =>
+      assertEquals(result, Builtins.StringClass)
+      assertEquals(result.asInstanceOf[RClass].name, "String")
     }
   }
   
