@@ -136,20 +136,11 @@ final case class VMState(
   */
 object Builtins:
 
-  // プレースホルダ（後で上書き）
-  private val dummy: RClass = RClass("Dummy", None)
-
   lazy val ObjectClass: RClass =
     RClass("Object", None)
 
   lazy val ClassClass: RClass =
     RClass("Class", Some(ObjectClass))
-
-  // Ruby の正しい循環関係の確立
-  // Object.class == Class
-  // Class.class == Class
-  ObjectClass.superclass     // force init
-  ClassClass.superclass      // force init
 
   // プリミティブクラス
   lazy val NilClass: RClass     = RClass("NilClass", Some(ObjectClass))
