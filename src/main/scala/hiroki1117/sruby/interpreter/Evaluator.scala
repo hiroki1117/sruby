@@ -232,13 +232,74 @@ object Evaluator:
     // =========================================================
     
     case ClassDef(nameParts, superclassExpr, body, pos) =>
-      // TODO Phase 2: クラスの生成と登録
-      // 必要な処理:
-      //   1. クラス名の解決（既存 or 新規作成）
-      //   2. superclass の評価
-      //   3. 新しいフレーム（self = klass）で body を評価
-      //   4. クラスオブジェクトを返す
-      StateT.pure(RNil)  // 暫定（Phase 2 で実装）
+      // 1. クラス名の解決（Phase 2: シンプルな名前のみサポート）
+      val className = nameParts match
+        case List(name) => name
+        case _ => 
+          // ネストしたクラス名は Phase 3 で実装
+          return raiseError(s"nested class names not yet supported: ${nameParts.mkString("::")}", pos)
+      
+      for
+        // 2. スーパークラスの評価
+        parentClass <- (superclassExpr match
+          case Some(expr) =>
+            eval(expr).flatMap {
+              case k: RClass => StateT.pure[IO, VMState, Option[RClass]](Some(k))
+              case other => raiseError(s"superclass must be a Class, got ${other.inspect}", pos).map(_ => None)
+            }
+          
+          case None =>
+            // スーパークラスが指定されていない場合は Object
+            StateT.pure[IO, VMState, Option[RClass]](Some(Builtins.ObjectClass))
+        )
+        
+        // 3. クラスの作成 or 取得（再オープン）
+        state <- getState()
+        klass <- (state.getClass(className) match
+          case Some(existingClass) =>
+            // 再オープンの場合
+            // スーパークラスの整合性チェック
+            val existingParentName = existingClass.superclass.map(_.name).getOrElse("none")
+            val newParentName = parentClass.map(_.name).getOrElse("none")
+            
+            if existingClass.superclass != parentClass then
+              raiseError(
+                s"superclass mismatch for class $className " +
+                s"(expected $existingParentName, got $newParentName)",
+                pos
+              )
+            else
+              StateT.pure[IO, VMState, RClass](existingClass)
+          
+          case None =>
+            // 新規クラスの作成
+            val newClass = RClass(
+              name = className,
+              superclass = parentClass,
+              methods = Map.empty
+            )
+            // すぐに登録（クラス本体内で self として参照できるようにするため）
+            StateT.modify[IO, VMState](_.updateClass(newClass)) *>
+              StateT.pure[IO, VMState, RClass](newClass)
+        ): Eval[RClass]
+        
+        // 4. クラス本体を評価するための新しいフレーム
+        classFrame = Frame(
+          self = klass,              // self = クラスオブジェクト
+          env = Env(),               // クラス定義内のローカル変数は空
+          currentClass = klass       // 現在のクラス = 定義中のクラス
+        )
+        
+        // 5. フレームを push → body 評価 → pop
+        _ <- pushFrame(classFrame)
+        _ <- eval(body)
+        _ <- popFrame()
+        
+        // 6. 評価後の最新クラス定義を取得
+        finalState <- getState()
+        finalClass = finalState.getClass(className).getOrElse(klass)
+        
+      yield finalClass  // クラスオブジェクトを返す（Phase 2 で実装）
     
     // =========================================================
     // モジュール定義
@@ -293,12 +354,16 @@ object Evaluator:
     */
   private def defineMethod(klass: RClass, method: RMethod): Eval[Unit] =
     StateT.modify { state =>
-      // クラスを更新
-      val updatedClass = klass.copy(
-        methods = klass.methods.updated(method.name, method)
+      // VMState.classes から最新のクラス定義を取得
+      // （複数メソッド定義時に、前のメソッドが反映されたクラスを取得するため）
+      val currentClass = state.getClass(klass.name).getOrElse(klass)
+      
+      // メソッドを追加
+      val updatedClass = currentClass.copy(
+        methods = currentClass.methods.updated(method.name, method)
       )
       
-      // VMState のクラステーブルも更新
+      // VMState のクラステーブルを更新
       state.updateClass(updatedClass)
     }
   
@@ -348,24 +413,19 @@ object Evaluator:
     * 現在は Phase 1 なので、Builtins の基本クラスのみ対応
     */
   private def lookupConstant(nameParts: List[String], pos: Position): Eval[RValue] =
+    // シンプルな定数名のみサポート（Phase 2）
     nameParts match
-      // 基本クラス定数: クラスオブジェクト自体を返す
-      case List("Object")    => StateT.pure(Builtins.ObjectClass)
-      case List("Class")     => StateT.pure(Builtins.ClassClass)
-      case List("Integer")   => StateT.pure(Builtins.IntegerClass)
-      case List("String")    => StateT.pure(Builtins.StringClass)
-      case List("Symbol")    => StateT.pure(Builtins.SymbolClass)
-      case List("Float")     => StateT.pure(Builtins.FloatClass)
-      case List("Array")     => StateT.pure(Builtins.ArrayClass)
-      case List("Hash")      => StateT.pure(Builtins.HashClass)
-      case List("Range")     => StateT.pure(Builtins.RangeClass)
-      case List("NilClass")  => StateT.pure(Builtins.NilClass)
-      case List("TrueClass") => StateT.pure(Builtins.TrueClass)
-      case List("FalseClass")=> StateT.pure(Builtins.FalseClass)
+      case List(name) =>
+        for
+          state <- getState()
+          klass <- state.getClass(name) match
+            case Some(k) => StateT.pure[IO, VMState, RValue](k)
+            case None => raiseError(s"uninitialized constant $name", pos)
+        yield klass
       
-      // TODO Phase 2: VMState.globalConstants からの検索
-      // TODO Phase 2: ネストした定数 A::B::C の解決
-      case _ => raiseError(s"uninitialized constant ${nameParts.mkString("::")}", pos)
+      case _ =>
+        // ネストした定数は Phase 3 で実装
+        raiseError(s"nested constants not yet supported: ${nameParts.mkString("::")}", pos)
   
   /**
     * メソッドを呼び出す
@@ -525,7 +585,7 @@ object Evaluator:
   /**
     * エラーを発生させる
     */
-  private def raiseError(message: String, pos: Position): Eval[RValue] =
+  private def raiseError[A](message: String, pos: Position): Eval[A] =
     StateT.liftF(IO.raiseError(new RuntimeException(s"$pos: $message")))
 
 /**

@@ -509,4 +509,137 @@ class EvaluatorSpec extends CatsEffectSuite:
       assert(result.left.exists(_.getMessage.contains("wrong number of arguments")))
     }
   }
+  
+  // =========================================================
+  // ClassDef のテスト
+  // =========================================================
+  
+  test("define simple class") {
+    // class Greeter
+    // end
+    val ast = ClassDef(List("Greeter"), None, NilLiteral)
+    evalExpr(ast).map { result =>
+      result match
+        case klass: RClass =>
+          assertEquals(klass.name, "Greeter")
+          assertEquals(klass.superclass, Some(Builtins.ObjectClass))
+        case _ => fail(s"Expected RClass, got ${result.inspect}")
+    }
+  }
+  
+  test("class definition returns class object") {
+    // result = class Foo
+    // end
+    val ast = ClassDef(List("Foo"), None, NilLiteral)
+    evalExpr(ast).map { result =>
+      assert(result.isInstanceOf[RClass])
+      assertEquals(result.asInstanceOf[RClass].name, "Foo")
+    }
+  }
+  
+  test("define class with method") {
+    // class Calculator
+    //   def add(a, b)
+    //     a + b
+    //   end
+    // end
+    val ast = ClassDef(
+      List("Calculator"),
+      None,
+      MethodDef(
+        "add",
+        List("a", "b"),
+        BinaryOp(LocalVarRef("a"), BinaryKind.Add, LocalVarRef("b"))
+      )
+    )
+    evalExpr(ast).map { result =>
+      result match
+        case klass: RClass =>
+          assertEquals(klass.name, "Calculator")
+          // メソッドが定義されているか確認
+          assert(klass.lookupMethod("add").isDefined)
+        case _ => fail(s"Expected RClass, got ${result.inspect}")
+    }
+  }
+  
+  test("define class with inheritance") {
+    // class Animal
+    // end
+    // class Dog < Animal
+    // end
+    val ast = Sequence(List(
+      ClassDef(List("Animal"), None, NilLiteral),
+      ClassDef(List("Dog"), Some(ConstantRef(List("Animal"))), NilLiteral)
+    ))
+    evalExpr(ast).map { result =>
+      result match
+        case klass: RClass =>
+          assertEquals(klass.name, "Dog")
+          assert(klass.superclass.isDefined)
+          assertEquals(klass.superclass.get.name, "Animal")
+        case _ => fail(s"Expected RClass, got ${result.inspect}")
+    }
+  }
+  
+  test("class reopening") {
+    // class Calculator
+    //   def add(a, b)
+    //     a + b
+    //   end
+    // end
+    // 
+    // class Calculator
+    //   def subtract(a, b)
+    //     a - b
+    //   end
+    // end
+    val ast = Sequence(List(
+      ClassDef(
+        List("Calculator"),
+        None,
+        MethodDef("add", List("a", "b"), BinaryOp(LocalVarRef("a"), BinaryKind.Add, LocalVarRef("b")))
+      ),
+      ClassDef(
+        List("Calculator"),
+        None,
+        MethodDef("subtract", List("a", "b"), BinaryOp(LocalVarRef("a"), BinaryKind.Sub, LocalVarRef("b")))
+      )
+    ))
+    evalExpr(ast).map { result =>
+      result match
+        case klass: RClass =>
+          assertEquals(klass.name, "Calculator")
+          // 両方のメソッドが定義されているか確認
+          assert(klass.lookupMethod("add").isDefined)
+          assert(klass.lookupMethod("subtract").isDefined)
+        case _ => fail(s"Expected RClass, got ${result.inspect}")
+    }
+  }
+  
+  test("class with multiple methods") {
+    // class Math
+    //   def add(a, b)
+    //     a + b
+    //   end
+    //   def multiply(a, b)
+    //     a * b
+    //   end
+    // end
+    val ast = ClassDef(
+      List("Math"),
+      None,
+      Sequence(List(
+        MethodDef("add", List("a", "b"), BinaryOp(LocalVarRef("a"), BinaryKind.Add, LocalVarRef("b"))),
+        MethodDef("multiply", List("a", "b"), BinaryOp(LocalVarRef("a"), BinaryKind.Mul, LocalVarRef("b")))
+      ))
+    )
+    evalExpr(ast).map { result =>
+      result match
+        case klass: RClass =>
+          assertEquals(klass.name, "Math")
+          assert(klass.lookupMethod("add").isDefined)
+          assert(klass.lookupMethod("multiply").isDefined)
+        case _ => fail(s"Expected RClass, got ${result.inspect}")
+    }
+  }
 
