@@ -60,9 +60,8 @@ class ASTSpec extends FunSuite {
   }
   
   test("NilLiteral") {
-    val nil = NilLiteral()
-    assertEquals(nil.toString, "nil")
-    assertEquals(nil.pos, Position.NoPosition)
+    assertEquals(NilLiteral.toString, "nil")
+    assertEquals(NilLiteral.pos, Position.NoPosition)
   }
   
   test("BooleanLiteral true") {
@@ -216,9 +215,8 @@ class ASTSpec extends FunSuite {
   // =========================================================
   
   test("Self") {
-    val self = Self()
-    assertEquals(self.toString, "self")
-    assertEquals(self.pos, Position.NoPosition)
+    assertEquals(Self.toString, "self")
+    assertEquals(Self.pos, Position.NoPosition)
   }
   
   // =========================================================

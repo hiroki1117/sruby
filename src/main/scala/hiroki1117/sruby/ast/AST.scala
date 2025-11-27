@@ -9,9 +9,8 @@ package hiroki1117.sruby.ast
   *   1. すべてのノードは Position を持つ（エラー報告のため）
   *   2. AST は不変（評価時に変更しない）
   *   3. 演算子は ADT で表現（String より型安全）
-  *   4. Positioned ノードは使わない（二重 pos を避ける）
-  *   5. nil/self も case class にして pos を持つ
-  *      → 評価器で RNil/frame.self（シングルトン）に変換
+  *   4. nil/self は case object（意味論的に唯一の値）
+  *   5. Phase 1 に必要な最小限の演算子のみ実装
   */
 
 // =========================================================
@@ -88,14 +87,15 @@ final case class BooleanLiteral(
   override def toString: String = value.toString
 
 /** 
-  * nil リテラル
+  * nil リテラル（シングルトン）
   * 
-  * 注意: AST レベルでは複数のインスタンスが存在しうるが、
-  * Evaluator で RNil（シングルトン）に変換される
+  * Ruby の nil は意味論的に唯一の値。
+  * AST レベルでも case object として表現する。
+  * 
+  * Evaluator で RNil（シングルトン）に変換される。
   */
-final case class NilLiteral(
-  pos: Position = Position.NoPosition
-) extends Expr:
+case object NilLiteral extends Expr:
+  def pos: Position = Position.NoPosition
   override def toString: String = "nil"
 
 /** シンボルリテラル: :name, :age */
@@ -171,7 +171,7 @@ final case class ConstantRef(
   override def toString: String = nameParts.mkString("::")
 
 // =========================================================
-// Operators - 演算子（ADT で型安全に）
+// Operators - 演算子（Phase 1 に必要な最小限のみ）
 // =========================================================
 
 /**
@@ -179,26 +179,26 @@ final case class ConstantRef(
   */
 sealed trait UnaryKind:
   def toMethodName: String
+  def toSymbol: String
 
 object UnaryKind:
   /** 符号反転: -x → x.-@ */
   case object Negate extends UnaryKind:
     def toMethodName: String = "-@"
+    def toSymbol: String = "-"
   
   /** 正符号: +x → x.+@ */
   case object Positive extends UnaryKind:
     def toMethodName: String = "+@"
+    def toSymbol: String = "+"
   
   /** 論理否定: !x → x.! */
   case object Not extends UnaryKind:
     def toMethodName: String = "!"
-  
-  /** ビット反転: ~x → x.~ */
-  case object BitNot extends UnaryKind:
-    def toMethodName: String = "~"
+    def toSymbol: String = "!"
 
 /**
-  * 二項演算子の種類
+  * 二項演算子の種類（Phase 1 に必要な基本演算のみ）
   */
 sealed trait BinaryKind:
   def toMethodName: String
@@ -215,8 +215,6 @@ object BinaryKind:
     def toMethodName: String = "/"
   case object Mod extends BinaryKind:
     def toMethodName: String = "%"
-  case object Pow extends BinaryKind:
-    def toMethodName: String = "**"
   
   // 比較演算
   case object Eq extends BinaryKind:
@@ -231,8 +229,6 @@ object BinaryKind:
     def toMethodName: String = ">"
   case object Ge extends BinaryKind:
     def toMethodName: String = ">="
-  case object Cmp extends BinaryKind:
-    def toMethodName: String = "<=>"
   
   // ビット演算
   case object BitAnd extends BinaryKind:
@@ -245,16 +241,6 @@ object BinaryKind:
     def toMethodName: String = "<<"
   case object RShift extends BinaryKind:
     def toMethodName: String = ">>"
-  
-  // 配列/文字列連結
-  case object Append extends BinaryKind:
-    def toMethodName: String = "<<"
-  
-  // マッチ演算
-  case object Match extends BinaryKind:
-    def toMethodName: String = "=~"
-  case object NoMatch extends BinaryKind:
-    def toMethodName: String = "!~"
 
 // =========================================================
 // Expression - 演算とメソッド呼び出し
@@ -271,7 +257,7 @@ final case class UnaryOp(
   operand: Expr,
   pos: Position = Position.NoPosition
 ) extends Expr:
-  override def toString: String = s"${kind.toMethodName}$operand"
+  override def toString: String = s"${kind.toSymbol}$operand"
 
 /**
   * 二項演算: 1 + 2, x * y, "hello" + " world"
@@ -319,14 +305,15 @@ object MethodCall:
     MethodCall(None, name, args, block, pos)
 
 /**
-  * Self 参照
+  * Self 参照（シングルトン）
   * 
-  * 注意: AST レベルでは複数のインスタンスが存在しうるが、
-  * Evaluator で frame.self に変換される
+  * Ruby の self は現在の実行コンテキストのレシーバーを指す特別な予約語。
+  * 意味論的に唯一の値なので case object として表現。
+  * 
+  * Evaluator で frame.self に変換される。
   */
-final case class Self(
-  pos: Position = Position.NoPosition
-) extends Expr:
+case object Self extends Expr:
+  def pos: Position = Position.NoPosition
   override def toString: String = "self"
 
 /**
@@ -407,6 +394,10 @@ object BlockKind:
   * 例:
   *   [1, 2, 3].each { |x| puts x }
   *   5.times do |i| ... end
+  * 
+  * 注意: ブロック内では新しいローカルスコープが作られる
+  *   x = 1
+  *   3.times { |x| puts x }  # この x は外側の x とは別
   */
 final case class BlockExpr(
   params: List[String],
@@ -456,6 +447,11 @@ final case class MethodDef(
   *       @name = name
   *     end
   *   end
+  * 
+  * 注意: Evaluator では以下の処理が必要
+  *   1. ConstantRef の lookup
+  *   2. superclass の評価（Expr → RClass）
+  *   3. RClass の生成と登録
   */
 final case class ClassDef(
   nameParts: List[String],
@@ -471,7 +467,7 @@ final case class ClassDef(
 /**
   * モジュール定義: module ModuleName ... end
   * 
-  * 将来実装予定
+  * Phase 2 で実装予定
   */
 final case class ModuleDef(
   nameParts: List[String],
