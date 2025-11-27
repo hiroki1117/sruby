@@ -393,4 +393,120 @@ class EvaluatorSpec extends CatsEffectSuite:
       assertEquals(result, RInteger(20))
     }
   }
+  
+  // =========================================================
+  // MethodDef のテスト
+  // =========================================================
+  
+  test("define simple method and call it") {
+    // def double(x)
+    //   x * 2
+    // end
+    // double(5)
+    val ast = Sequence(List(
+      MethodDef(
+        "double",
+        List("x"),
+        BinaryOp(LocalVarRef("x"), BinaryKind.Mul, IntLiteral(2))
+      ),
+      MethodCall(None, "double", List(IntLiteral(5)))
+    ))
+    evalExpr(ast).map { result =>
+      assertEquals(result, RInteger(10))
+    }
+  }
+  
+  test("method definition returns symbol") {
+    // def hello
+    //   "world"
+    // end
+    val ast = MethodDef("hello", List.empty, StringLiteral("world"))
+    evalExpr(ast).map { result =>
+      assertEquals(result, RSymbol.intern("hello"))
+    }
+  }
+  
+  test("define method with multiple parameters") {
+    // def add(a, b)
+    //   a + b
+    // end
+    // add(3, 7)
+    val ast = Sequence(List(
+      MethodDef(
+        "add",
+        List("a", "b"),
+        BinaryOp(LocalVarRef("a"), BinaryKind.Add, LocalVarRef("b"))
+      ),
+      MethodCall(None, "add", List(IntLiteral(3), IntLiteral(7)))
+    ))
+    evalExpr(ast).map { result =>
+      assertEquals(result, RInteger(10))
+    }
+  }
+  
+  test("method with local variables") {
+    // def complex(x)
+    //   y = x * 2
+    //   z = y + 10
+    //   z
+    // end
+    // complex(5)
+    val ast = Sequence(List(
+      MethodDef(
+        "complex",
+        List("x"),
+        Sequence(List(
+          LocalVarAssign("y", BinaryOp(LocalVarRef("x"), BinaryKind.Mul, IntLiteral(2))),
+          LocalVarAssign("z", BinaryOp(LocalVarRef("y"), BinaryKind.Add, IntLiteral(10))),
+          LocalVarRef("z")
+        ))
+      ),
+      MethodCall(None, "complex", List(IntLiteral(5)))
+    ))
+    evalExpr(ast).map { result =>
+      // x = 5, y = 10, z = 20
+      assertEquals(result, RInteger(20))
+    }
+  }
+  
+  test("method with conditional") {
+    // def abs(x)
+    //   if x < 0 then -x else x end
+    // end
+    // abs(-5)
+    val ast = Sequence(List(
+      MethodDef(
+        "abs",
+        List("x"),
+        IfExpr(
+          BinaryOp(LocalVarRef("x"), BinaryKind.Lt, IntLiteral(0)),
+          UnaryOp(UnaryKind.Negate, LocalVarRef("x")),
+          Some(LocalVarRef("x"))
+        )
+      ),
+      MethodCall(None, "abs", List(IntLiteral(-5)))
+    ))
+    evalExpr(ast).map { result =>
+      assertEquals(result, RInteger(5))
+    }
+  }
+  
+  test("wrong number of arguments raises error") {
+    // def foo(a, b)
+    //   a + b
+    // end
+    // foo(1)  # エラー
+    val ast = Sequence(List(
+      MethodDef(
+        "foo",
+        List("a", "b"),
+        BinaryOp(LocalVarRef("a"), BinaryKind.Add, LocalVarRef("b"))
+      ),
+      MethodCall(None, "foo", List(IntLiteral(1)))
+    ))
+    evalExpr(ast).attempt.map { result =>
+      assert(result.isLeft)
+      assert(result.left.exists(_.getMessage.contains("wrong number of arguments")))
+    }
+  }
 

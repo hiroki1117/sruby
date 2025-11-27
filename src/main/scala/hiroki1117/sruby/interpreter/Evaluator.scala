@@ -26,6 +26,9 @@ import cats.implicits.*
   */
 object Evaluator:
   
+  // RUserMethod に評価関数を注入（循環参照を避けるため）
+  RUserMethod.evalBody = eval
+  
   /**
     * AST ノードを評価して RValue を返す
     */
@@ -206,14 +209,23 @@ object Evaluator:
     // メソッド定義
     // =========================================================
     
-    case MethodDef(name, params, body, _) =>
-      // TODO Phase 2: 現在のクラスにメソッドを定義
-      // 必要な処理:
-      //   1. frame.currentClass を取得
-      //   2. RMethod(name, params, body) を生成
-      //   3. currentClass.defineMethod(name, method) で登録
-      //   4. シンボルを返す（Ruby の仕様）
-      StateT.pure(RSymbol.intern(name))  // 暫定（Phase 2 で実装）
+    case MethodDef(name, params, body, pos) =>
+      for
+        frame <- getCurrentFrame()
+        
+        // ユーザー定義メソッドを作成
+        method = RUserMethod(
+          name = name,
+          params = params,
+          body = body,
+          definingClass = frame.currentClass
+        )
+        
+        // 現在のクラスにメソッドを定義
+        _ <- defineMethod(frame.currentClass, method)
+        
+        // Ruby の仕様: def は定義したメソッド名のシンボルを返す
+      yield RSymbol.intern(name)
     
     // =========================================================
     // クラス定義
@@ -257,6 +269,38 @@ object Evaluator:
     */
   private def getState(): Eval[VMState] =
     StateT.get
+  
+  /**
+    * フレームを push（メソッド呼び出し時）
+    */
+  private def pushFrame(frame: Frame): Eval[Unit] =
+    StateT.modify { state =>
+      state.pushFrame(frame)
+    }
+  
+  /**
+    * フレームを pop（メソッド呼び出し終了時）
+    */
+  private def popFrame(): Eval[Unit] =
+    StateT.modify { state =>
+      state.popFrame()._2  // (Frame, VMState) のタプルから VMState を取得
+    }
+  
+  /**
+    * クラスにメソッドを定義
+    * 
+    * 注意: Ruby では同じクラスに複数回メソッドを定義できる（上書き）
+    */
+  private def defineMethod(klass: RClass, method: RMethod): Eval[Unit] =
+    StateT.modify { state =>
+      // クラスを更新
+      val updatedClass = klass.copy(
+        methods = klass.methods.updated(method.name, method)
+      )
+      
+      // VMState のクラステーブルも更新
+      state.updateClass(updatedClass)
+    }
   
   /**
     * self を更新
@@ -327,38 +371,47 @@ object Evaluator:
     * メソッドを呼び出す
     * 
     * Ruby のメソッド探索:
-    *   1. receiver.class からメソッドを探索
+    *   1. receiver.class からメソッドを探索（VMState.classes から最新定義を取得）
     *   2. 継承チェーンを辿る（RClass.lookupMethod が実施）
     *   3. 組み込みメソッドをチェック
     *   4. method_missing を呼び出す
     *   5. それでもダメなら NoMethodError
     */
   private def callMethod(receiver: RValue, methodName: String, args: List[RValue]): Eval[RValue] =
-    receiver.rubyClass.lookupMethod(methodName) match
-      case Some(method) =>
-        // メソッドを実行
-        method.invoke(receiver, args)
+    for
+      state <- getState()
       
-      case None =>
-        // 組み込みメソッドをチェック
-        tryBuiltinMethod(receiver, methodName, args) match
-          case Some(result) => 
-            result
-          
-          case None =>
-            // method_missing にフォールバック
-            receiver.rubyClass.lookupMethod("method_missing") match
-              case Some(missingMethod) =>
-                // Ruby の method_missing は第1引数にシンボルを受け取る
-                val methodNameSymbol = RSymbol.intern(methodName)
-                missingMethod.invoke(receiver, methodNameSymbol :: args)
-              
-              case None =>
-                // method_missing も見つからない場合はエラー
-                raiseError(
-                  s"undefined method `$methodName' for ${receiver.inspect}:${receiver.rubyClass.name}",
-                  Position.NoPosition
-                )
+      // VMState.classes から最新のクラス定義を取得
+      // （MethodDef で更新されたクラスを反映するため）
+      receiverClass = state.getClass(receiver.rubyClass.name)
+        .getOrElse(receiver.rubyClass)
+      
+      result <- receiverClass.lookupMethod(methodName) match
+        case Some(method) =>
+          // メソッドを実行
+          method.invoke(receiver, args)
+        
+        case None =>
+          // 組み込みメソッドをチェック
+          tryBuiltinMethod(receiver, methodName, args) match
+            case Some(result) => 
+              result
+            
+            case None =>
+              // method_missing にフォールバック
+              receiverClass.lookupMethod("method_missing") match
+                case Some(missingMethod) =>
+                  // Ruby の method_missing は第1引数にシンボルを受け取る
+                  val methodNameSymbol = RSymbol.intern(methodName)
+                  missingMethod.invoke(receiver, methodNameSymbol :: args)
+                
+                case None =>
+                  // method_missing も見つからない場合はエラー
+                  raiseError(
+                    s"undefined method `$methodName' for ${receiver.inspect}:${receiverClass.name}",
+                    Position.NoPosition
+                  )
+    yield result
   
   /**
     * 組み込みメソッドを試行

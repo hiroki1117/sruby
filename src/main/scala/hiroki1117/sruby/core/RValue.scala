@@ -2,6 +2,7 @@ package hiroki1117.sruby.core
 
 import cats.data.StateT
 import cats.effect.IO
+import hiroki1117.sruby.ast.Expr
 
 /**
   * =========================================================
@@ -83,12 +84,97 @@ final case class RClass(
 
 /**
   * =========================================================
-  * Ruby メソッド表現（Eval を返す）
+  * Ruby メソッド表現
   * =========================================================
+  * 
+  * Ruby のメソッドには2種類ある:
+  *   1. ユーザー定義メソッド（def で定義、AST を保持）
+  *   2. 組み込みメソッド（Scala で実装、関数を保持）
   */
-final case class RMethod(
-  invoke: (RValue, List[RValue]) => Eval[RValue]
-)
+sealed trait RMethod:
+  def name: String
+  def invoke(receiver: RValue, args: List[RValue]): Eval[RValue]
+
+/**
+  * ユーザー定義メソッド（Ruby の def で定義）
+  */
+final case class RUserMethod(
+  name: String,
+  params: List[String],           // パラメータ名のリスト
+  body: Expr,                      // メソッド本体（AST）
+  definingClass: RClass            // 定義されたクラス
+) extends RMethod:
+  
+  def invoke(receiver: RValue, args: List[RValue]): Eval[RValue] =
+    // 引数の数をチェック
+    if args.length != params.length then
+      StateT.liftF(IO.raiseError(
+        new RuntimeException(
+          s"wrong number of arguments for $name (given ${args.length}, expected ${params.length})"
+        )
+      ))
+    else
+      // 引数をバインドした環境を作成
+      val newEnv = params.zip(args).foldLeft(Env()) { case (env, (paramName, argValue)) =>
+        env.set(paramName, argValue)
+      }
+      
+      // メソッド呼び出し用の新しいフレーム
+      val methodFrame = Frame(
+        self = receiver,
+        env = newEnv,
+        currentClass = definingClass
+      )
+      
+      // フレームを push → body 評価 → pop
+      for
+        state <- StateT.get[IO, VMState]
+        // 新しいフレームで評価
+        newState = state.pushFrame(methodFrame)
+        _ <- StateT.set[IO, VMState](newState)
+        
+        // メソッド本体を評価
+        // NOTE: Evaluator.eval は循環参照を避けるため、
+        // RUserMethod.evalBody として外部から設定される
+        result <- RUserMethod.evalBody(body)
+        
+        // フレームを pop
+        state2 <- StateT.get[IO, VMState]
+        _ <- StateT.set[IO, VMState](state2.popFrame()._2)
+      yield result
+
+/**
+  * RUserMethod のコンパニオンオブジェクト
+  */
+object RUserMethod:
+  /**
+    * メソッド本体を評価する関数
+    * Evaluator から注入される
+    */
+  var evalBody: Expr => Eval[RValue] = _ => StateT.pure(RNil)
+
+/**
+  * 組み込みメソッド（Scala で実装）
+  */
+final case class RBuiltinMethod(
+  name: String,
+  impl: (RValue, List[RValue]) => Eval[RValue]
+) extends RMethod:
+  
+  def invoke(receiver: RValue, args: List[RValue]): Eval[RValue] =
+    impl(receiver, args)
+
+/**
+  * RMethod のコンパニオンオブジェクト
+  * 
+  * 既存のテストコードとの互換性のため、apply メソッドを提供
+  */
+object RMethod:
+  /**
+    * 組み込みメソッドを作成（後方互換性のため）
+    */
+  def apply(impl: (RValue, List[RValue]) => Eval[RValue]): RMethod =
+    RBuiltinMethod("<anonymous>", impl)
 
 /**
   * =========================================================
@@ -118,7 +204,8 @@ final case class Frame(
   */
 final case class VMState(
   frames: List[Frame],
-  globalClasses: Map[String, RClass] = Map.empty
+  globalClasses: Map[String, RClass] = Map.empty,
+  classes: Map[String, RClass] = Map.empty  // クラステーブル（Phase 2）
 ):
   def currentFrame: Frame = frames.head
 
@@ -127,6 +214,34 @@ final case class VMState(
 
   def popFrame(): (Frame, VMState) =
     (frames.head, this.copy(frames = frames.tail))
+  
+  /**
+    * クラスを更新（MethodDef で使用）
+    */
+  def updateClass(klass: RClass): VMState =
+    this.copy(classes = classes.updated(klass.name, klass))
+  
+  /**
+    * クラスを取得
+    */
+  def getClass(name: String): Option[RClass] =
+    classes.get(name).orElse(
+      // Builtins のクラスもチェック
+      name match
+        case "Object"    => Some(Builtins.ObjectClass)
+        case "Class"     => Some(Builtins.ClassClass)
+        case "Integer"   => Some(Builtins.IntegerClass)
+        case "String"    => Some(Builtins.StringClass)
+        case "Symbol"    => Some(Builtins.SymbolClass)
+        case "Float"     => Some(Builtins.FloatClass)
+        case "Array"     => Some(Builtins.ArrayClass)
+        case "Hash"      => Some(Builtins.HashClass)
+        case "Range"     => Some(Builtins.RangeClass)
+        case "NilClass"  => Some(Builtins.NilClass)
+        case "TrueClass" => Some(Builtins.TrueClass)
+        case "FalseClass"=> Some(Builtins.FalseClass)
+        case _ => None
+    )
 
 /**
   * =========================================================
