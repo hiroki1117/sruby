@@ -1,7 +1,37 @@
+# SBT
 **/target
+*.class
+*.log
+sbt.json
+project/metals.sbt
+
+# Metals / Bloop
 .metals/
 .bloop/
-
 metals.log
+.bsp/
 
-sbt.json
+# IDE
+.idea/
+*.iml
+.vscode/
+*.code-workspace
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+\#*\#
+.\#*
+
+# Temporary files
+*.tmp
+*.bak
+*.cache
