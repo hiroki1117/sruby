@@ -60,8 +60,9 @@ class ASTSpec extends FunSuite {
   }
   
   test("NilLiteral") {
-    assertEquals(NilLiteral.toString, "nil")
-    assertEquals(NilLiteral.pos, Position.NoPosition)
+    val nil = NilLiteral()
+    assertEquals(nil.toString, "nil")
+    assertEquals(nil.pos, Position.NoPosition)
   }
   
   test("BooleanLiteral true") {
@@ -102,7 +103,7 @@ class ASTSpec extends FunSuite {
   test("LocalVarAssign with expression") {
     val assign = LocalVarAssign(
       "result",
-      BinaryOp(LocalVarRef("x"), "+", LocalVarRef("y"))
+      BinaryOp(LocalVarRef("x"), BinaryKind.Add, LocalVarRef("y"))
     )
     assertEquals(assign.name, "result")
     assert(assign.value.isInstanceOf[BinaryOp])
@@ -125,8 +126,8 @@ class ASTSpec extends FunSuite {
   // =========================================================
   
   test("BinaryOp addition") {
-    val op = BinaryOp(IntLiteral(1), "+", IntLiteral(2))
-    assertEquals(op.operator, "+")
+    val op = BinaryOp(IntLiteral(1), BinaryKind.Add, IntLiteral(2))
+    assertEquals(op.kind, BinaryKind.Add)
     assertEquals(op.left, IntLiteral(1))
     assertEquals(op.right, IntLiteral(2))
     assertEquals(op.toString, "(1 + 2)")
@@ -134,19 +135,19 @@ class ASTSpec extends FunSuite {
   
   test("BinaryOp nested") {
     // (1 + 2) * 3
-    val inner = BinaryOp(IntLiteral(1), "+", IntLiteral(2))
-    val outer = BinaryOp(inner, "*", IntLiteral(3))
+    val inner = BinaryOp(IntLiteral(1), BinaryKind.Add, IntLiteral(2))
+    val outer = BinaryOp(inner, BinaryKind.Mul, IntLiteral(3))
     assertEquals(outer.toString, "((1 + 2) * 3)")
   }
   
   test("BinaryOp with variables") {
-    val op = BinaryOp(LocalVarRef("x"), "*", LocalVarRef("y"))
+    val op = BinaryOp(LocalVarRef("x"), BinaryKind.Mul, LocalVarRef("y"))
     assertEquals(op.toString, "(x * y)")
   }
   
   test("BinaryOp comparison") {
-    val op = BinaryOp(IntLiteral(10), ">", IntLiteral(5))
-    assertEquals(op.operator, ">")
+    val op = BinaryOp(IntLiteral(10), BinaryKind.Gt, IntLiteral(5))
+    assertEquals(op.kind, BinaryKind.Gt)
   }
   
   // =========================================================
@@ -195,7 +196,7 @@ class ASTSpec extends FunSuite {
     val seq = Sequence(List(
       LocalVarAssign("x", IntLiteral(10)),
       LocalVarAssign("y", IntLiteral(20)),
-      BinaryOp(LocalVarRef("x"), "+", LocalVarRef("y"))
+      BinaryOp(LocalVarRef("x"), BinaryKind.Add, LocalVarRef("y"))
     ))
     assertEquals(seq.exprs.length, 3)
   }
@@ -215,8 +216,9 @@ class ASTSpec extends FunSuite {
   // =========================================================
   
   test("Self") {
-    assertEquals(Self.toString, "self")
-    assertEquals(Self.pos, Position.NoPosition)
+    val self = Self()
+    assertEquals(self.toString, "self")
+    assertEquals(self.pos, Position.NoPosition)
   }
   
   // =========================================================
@@ -225,7 +227,7 @@ class ASTSpec extends FunSuite {
   
   test("IfExpr structure") {
     val ifExpr = IfExpr(
-      BinaryOp(LocalVarRef("x"), ">", IntLiteral(10)),
+      BinaryOp(LocalVarRef("x"), BinaryKind.Gt, IntLiteral(10)),
       StringLiteral("big"),
       Some(StringLiteral("small"))
     )
@@ -245,8 +247,8 @@ class ASTSpec extends FunSuite {
   
   test("WhileExpr structure") {
     val whileExpr = WhileExpr(
-      BinaryOp(LocalVarRef("x"), "<", IntLiteral(10)),
-      LocalVarAssign("x", BinaryOp(LocalVarRef("x"), "+", IntLiteral(1)))
+      BinaryOp(LocalVarRef("x"), BinaryKind.Lt, IntLiteral(10)),
+      LocalVarAssign("x", BinaryOp(LocalVarRef("x"), BinaryKind.Add, IntLiteral(1)))
     )
     assert(whileExpr.condition.isInstanceOf[BinaryOp])
     assert(whileExpr.body.isInstanceOf[LocalVarAssign])
@@ -255,7 +257,7 @@ class ASTSpec extends FunSuite {
   test("BlockExpr structure") {
     val block = BlockExpr(
       List("x"),
-      BinaryOp(LocalVarRef("x"), "*", IntLiteral(2))
+      BinaryOp(LocalVarRef("x"), BinaryKind.Mul, IntLiteral(2))
     )
     assertEquals(block.params, List("x"))
     assert(block.body.isInstanceOf[BinaryOp])
@@ -274,7 +276,7 @@ class ASTSpec extends FunSuite {
     val ast = Sequence(List(
       LocalVarAssign("x", IntLiteral(10)),
       LocalVarAssign("y", IntLiteral(20)),
-      BinaryOp(LocalVarRef("x"), "+", LocalVarRef("y"))
+      BinaryOp(LocalVarRef("x"), BinaryKind.Add, LocalVarRef("y"))
     ))
     
     assertEquals(ast.exprs.length, 3)
@@ -286,7 +288,7 @@ class ASTSpec extends FunSuite {
   test("Complex AST: 'hello'.upcase + ' world'") {
     val ast = BinaryOp(
       MethodCall(Some(StringLiteral("hello")), "upcase", List.empty),
-      "+",
+      BinaryKind.Add,
       StringLiteral(" world")
     )
     
@@ -299,8 +301,8 @@ class ASTSpec extends FunSuite {
       Some(LocalVarRef("obj")),
       "method",
       List(
-        BinaryOp(LocalVarRef("x"), "+", IntLiteral(1)),
-        BinaryOp(LocalVarRef("y"), "*", IntLiteral(2))
+        BinaryOp(LocalVarRef("x"), BinaryKind.Add, IntLiteral(1)),
+        BinaryOp(LocalVarRef("y"), BinaryKind.Mul, IntLiteral(2))
       )
     )
     
