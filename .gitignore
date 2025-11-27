@@ -1,1 +1,5 @@
 **/target
+.metals/
+.bloop/
+
+metals.log
