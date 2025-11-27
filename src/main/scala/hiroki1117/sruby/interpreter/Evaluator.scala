@@ -1,6 +1,6 @@
 package hiroki1117.sruby.interpreter
 
-import hiroki1117.sruby.core.{*, given}
+import hiroki1117.sruby.core.*
 import hiroki1117.sruby.ast.*
 import cats.effect.IO
 import cats.data.StateT
@@ -17,6 +17,12 @@ import cats.implicits.*
   *   - Eval[A] = StateT[IO, VMState, A] を使用
   *   - VMState で実行状態（フレーム、グローバル変数等）を管理
   *   - すべての式は値を返す（Ruby の特性）
+  * 
+  * Phase 1 改善（Ruby 仕様準拠）:
+  *   ✅ updateSelf/updateEnv のフレームスタック破壊バグ修正
+  *   ✅ lookupConstant を Ruby 仕様に準拠（クラスオブジェクトを返す）
+  *   ✅ method_missing へのフォールバック追加
+  *   ✅ コメントの改善と TODO の明確化
   */
 object Evaluator:
   
@@ -41,8 +47,10 @@ object Evaluator:
       StateT.pure(if b then RTrue else RFalse)
     
     case SymbolLiteral(name, _) =>
-      // TODO: Symbol pool で管理（同じ名前のシンボルは同一オブジェクト）
-      StateT.pure(RString(name)) // 暫定的に String として扱う
+      // TODO Phase 2: RSymbol.intern(name) を実装
+      // Ruby の Symbol は不変・高速比較・interned
+      // 現在は暫定的に String として扱う（Phase 2 で RSymbol に変更）
+      StateT.pure(RString(name))
     
     // =========================================================
     // Self
@@ -239,35 +247,70 @@ object Evaluator:
   
   /**
     * self を更新
+    * 
+    * 注意: Ruby のフレームスタックは LIFO
+    * 現在のフレーム（head）のみを更新し、残りのスタックは保持
     */
   private def updateSelf(newSelf: RValue): Eval[Unit] =
     StateT.modify { state =>
-      val oldFrame = state.currentFrame
-      val newFrame = Frame(newSelf, oldFrame.env, oldFrame.currentClass)
-      state.copy(frames = newFrame :: state.frames.tail)
+      state.frames match
+        case Nil => 
+          // フレームが空の場合（通常はありえない）
+          state
+        case head :: tail =>
+          val newFrame = head.copy(self = newSelf)
+          state.copy(frames = newFrame :: tail)
     }
   
   /**
     * 環境（ローカル変数）を更新
+    * 
+    * 注意: Ruby のフレームスタックは LIFO
+    * 現在のフレーム（head）のみを更新し、残りのスタックは保持
     */
   private def updateEnv(f: Env => Env): Eval[Unit] =
     StateT.modify { state =>
-      val oldFrame = state.currentFrame
-      val newFrame = oldFrame.copy(env = f(oldFrame.env))
-      state.copy(frames = newFrame :: state.frames.tail)
+      state.frames match
+        case Nil =>
+          // フレームが空の場合（通常はありえない）
+          state
+        case head :: tail =>
+          val newFrame = head.copy(env = f(head.env))
+          state.copy(frames = newFrame :: tail)
     }
   
   /**
     * 定数を lookup（クラス名等）
+    * 
+    * Ruby の定数解決順序:
+    *   1. 現在のクラス/モジュールの nesting
+    *   2. 現在のクラスの superclass chain
+    *   3. トップレベル Object の定数
+    *   4. ::CONST の場合はルートから lookup
+    * 
+    * 現在は Phase 1 なので、Builtins の基本クラスのみ対応
     */
   private def lookupConstant(nameParts: List[String], pos: Position): Eval[RValue] =
-    // TODO: 定数テーブルから検索
-    // 暫定: Builtins から基本クラスを返す
     nameParts match
-      case List("Object") => StateT.pure(RObject(Builtins.ClassClass))
-      case List("Class") => StateT.pure(RObject(Builtins.ClassClass))
-      case List("Integer") => StateT.pure(RObject(Builtins.ClassClass))
-      case List("String") => StateT.pure(RObject(Builtins.ClassClass))
+      // 基本クラス定数: クラスオブジェクト自体を返す
+      // Phase 1: 現在実装されているクラスのみ
+      case List("Object")    => StateT.pure(Builtins.ObjectClass)
+      case List("Class")     => StateT.pure(Builtins.ClassClass)
+      case List("Integer")   => StateT.pure(Builtins.IntegerClass)
+      case List("String")    => StateT.pure(Builtins.StringClass)
+      case List("NilClass")  => StateT.pure(Builtins.NilClass)
+      case List("TrueClass") => StateT.pure(Builtins.TrueClass)
+      case List("FalseClass")=> StateT.pure(Builtins.FalseClass)
+      
+      // TODO Phase 2: 以下のクラスを RValue.scala の Builtins に追加
+      // case List("Float")  => StateT.pure(Builtins.FloatClass)
+      // case List("Symbol") => StateT.pure(Builtins.SymbolClass)
+      // case List("Array")  => StateT.pure(Builtins.ArrayClass)
+      // case List("Hash")   => StateT.pure(Builtins.HashClass)
+      // case List("Range")  => StateT.pure(Builtins.RangeClass)
+      
+      // TODO: VMState.globalConstants からの検索
+      // TODO: ネストした定数 A::B::C の解決
       case _ => raiseError(s"uninitialized constant ${nameParts.mkString("::")}", pos)
   
   /**
@@ -275,8 +318,10 @@ object Evaluator:
     * 
     * Ruby のメソッド探索:
     *   1. receiver.class からメソッドを探索
-    *   2. 継承チェーンを辿る
-    *   3. method_missing を呼び出す（TODO）
+    *   2. 継承チェーンを辿る（RClass.lookupMethod が実施）
+    *   3. 組み込みメソッドをチェック
+    *   4. method_missing を呼び出す
+    *   5. それでもダメなら NoMethodError
     */
   private def callMethod(receiver: RValue, methodName: String, args: List[RValue]): Eval[RValue] =
     receiver.rubyClass.lookupMethod(methodName) match
@@ -287,17 +332,33 @@ object Evaluator:
       case None =>
         // 組み込みメソッドをチェック
         tryBuiltinMethod(receiver, methodName, args) match
-          case Some(result) => result
+          case Some(result) => 
+            result
+          
           case None =>
-            raiseError(
-              s"undefined method `$methodName' for ${receiver.inspect}:${receiver.rubyClass.name}",
-              Position.NoPosition
-            )
+            // method_missing にフォールバック
+            receiver.rubyClass.lookupMethod("method_missing") match
+              case Some(missingMethod) =>
+                // TODO: RSymbol の実装後、シンボルとして渡す
+                // 暫定: メソッド名を文字列として渡す
+                val methodNameValue = RString(methodName)
+                missingMethod.invoke(receiver, methodNameValue :: args)
+              
+              case None =>
+                // method_missing も見つからない場合はエラー
+                raiseError(
+                  s"undefined method `$methodName' for ${receiver.inspect}:${receiver.rubyClass.name}",
+                  Position.NoPosition
+                )
   
   /**
     * 組み込みメソッドを試行
     * 
-    * Phase 1 では基本的な演算のみ実装
+    * Phase 1: パターンマッチで直接実装（現在）
+    * Phase 2: RClass のメソッドテーブルに登録して dispatch
+    * 
+    * 注意: この関数は Phase 1 の暫定実装
+    * 将来的には Builtins で各クラスにメソッドを defineMethod する形に移行
     */
   private def tryBuiltinMethod(receiver: RValue, methodName: String, args: List[RValue]): Option[Eval[RValue]] =
     (receiver, methodName, args) match
